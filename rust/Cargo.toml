@@ -1,0 +1,24 @@
+[package]
+name = "klstore"
+version = "0.0.0"
+repository = "https://github.com/thill/klstore/"
+authors = ["Eric Thill <thill@users.noreply.github.com>"]
+description = "klstore rust library"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+aws-creds = "0.27"
+ctrlc = "3"
+env_logger = "0.9"
+exitcode = "1"
+linked-hash-map = "0.5"
+log = "0.4"
+regex = "1"
+rdkafka = "0.28"
+rust-ini = "0.17"
+rust-s3 = { version = "0.28", default-features = false, features = ["sync"] }
+threadlanes = "0.1.0"
+
+[[bin]]
+name = "kafka_bridge"
+path = "src/kafka/main.rs"
