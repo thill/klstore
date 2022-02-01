@@ -111,6 +111,12 @@ pub struct Insertion {
 The `S3StoreWriter` and `S3StoreReader` offset reader and writer functionality backed by an S3 store.
 Both can be configured from the `S3StoreConfig` object, but some configuration parameters are only used by one of the two implementations.
 
+### Object Keys
+The following structure is used for object keys to enable bi-directional iteration and O(log(n)) binary searchability by offset, timestamp and nonce.
+```
+{prefix}{keyspace}/{key}/data_o{firstOffset}-o{lastOffset}_t{minTimestamp}-t{maxTimestamp}_n{firstNonce}-n{nextNonce}_s{sizeInBytes}_p{priorBatchStartOffset}.bin
+```
+
 ### Shared Config
 The following parameters are used to specify S3-connection details:
 ```
