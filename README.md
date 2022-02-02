@@ -12,17 +12,22 @@ Readers can begin iterating from any point in a list, searchable by either offse
 
 
 ## Terminology
-* `keyspace`: A collection of keys
-* `key`: A unique key in a keyspace
-* `list`: An iterable collection of elements, identified by a key
-* `offset`: The position of a single element in a list
-* `nonce`: An ever-growing number per key, used for de-duplication of records 
+
+| Term       | Description
+|------------|------------
+| `keyspace` | A collection of keys
+| `key`      | A unique key in a keyspace
+| `list`     | An iterable collection of elements, identified by a key
+| `offset`   | The position of a single element in a list
+| `nonce`    | An ever-growing number per key, used for de-duplication of records
 
 
 ## Rust API
+
 ### Reader
+
 The `StoreReader` trait expresses the API around reading from an S3-backed key/list store:
-```
+```rust
 pub trait StoreReader {
     /// read metadata for a keyspace, returning an error if the keyspace does not exist
     fn read_keyspace_metadata(&self, keyspace: &str) -> Result<KeyspaceMetadata, StoreError>;
@@ -50,16 +55,18 @@ pub trait StoreReader {
     ) -> Result<ItemList, StoreError>;
 }
 ```
+
 An optional `ItemFilter` can be defined to begin iteration from an arbitrary element in a key's list:
-```
+```rust
 pub struct ItemFilter {
     pub start_offset: Option<u64>,
     pub start_timestamp: Option<i64>,
     pub start_nonce: Option<u128>,
 }
 ```
+
 A returned item list represents a single page of results. Iteration can continue using the returned `continuation_token`:
-```
+```rust
 pub struct ItemList {
     pub keyspace: String,
     pub key: String,
@@ -70,8 +77,9 @@ pub struct ItemList {
 ```
 
 ### Writer
+
 The `StoreWriter` trait expresses the API around writing to an S3-backed key/list store:
-```
+```rust
 pub trait StoreWriter {
     /// create a new keyspace, returning an error on failure or if the keyspace already existed
     fn create_keyspace(&self, keyspace: &str) -> Result<CreatedKeyspace, StoreError>;
@@ -96,9 +104,10 @@ pub trait StoreWriter {
     fn duty_cycle(&self) -> Result<(), StoreError>;
 }
 ```
+
 The `append_list` function allows writing of a vector of items, each of which will be individually nonce-checked.
 The user has the option of specifiying a timestamp. When left undefined, the `StoreWriter` implementation will use the system clock.
-```
+```rust
 pub struct Insertion {
     pub value: Vec<u8>,
     pub nonce: Option<u128>,
@@ -108,18 +117,21 @@ pub struct Insertion {
 
 
 ## S3
+
 The `S3StoreWriter` and `S3StoreReader` offset reader and writer functionality backed by an S3 store.
 Both can be configured from the `S3StoreConfig` object, but some configuration parameters are only used by one of the two implementations.
 
 ### Object Keys
+
 The following structure is used for object keys to enable bi-directional iteration and O(log(n)) binary searchability by offset, timestamp and nonce.
 ```
 {prefix}{keyspace}/{key}/data_o{firstOffset}-o{lastOffset}_t{minTimestamp}-t{maxTimestamp}_n{firstNonce}-n{nextNonce}_s{sizeInBytes}_p{priorBatchStartOffset}.bin
 ```
 
 ### Shared Config
+
 The following parameters are used to specify S3-connection details:
-```
+```rust
 /// object prefix, defaults to an empty string, which would put the keyspace at the root of the bucket
 object_prefix: String
 
@@ -155,15 +167,17 @@ profile: Option<String>
 ```
 
 ### Reader-Specific Config
+
 The following parameters are used to specify reader default behavior when not defined in a request:
-```
+```rust
 /// set the default number of max results used when none is defined in the request
 default_max_results: u64
 ```
 
 ### Writer-Specific Config
+
 The following parameters are used to specify writer cache and compaction behavior:
-```
+```rust
 /// set the maximum number of cached keys kept in memory in the writer, defaults to 100k
 max_cached_keys: usize,
 
@@ -179,11 +193,12 @@ compact_objects_threshold: 100
 
 
 ## Batching
+
 The `BatchingStoreWriter` implements the `StoreWriterTrait` and wraps an underlying `StoreWriter` implementation to enable batching of insertions to optimize throughput.
 Multiple threads can be utilized to further increase write throughput. 
 Individual keys will be batched by the same writer thread.
 The `BatchingStoreWriterConfig` allows the user to configure the following batching parameters:
-```
+```rust
 /// set the number of writer threads. defaults to 1.
 /// each key will always be written by the same thread, so consider number of keys when determining the number of threads to use.
 writer_thread_count: usize
@@ -211,12 +226,14 @@ batch_flush_size_threshold: u64
 
 
 ## Kafka Bridge
-A `KafkaConsumerBridge` couples an `S3StoreWriter` and `BatchingStoreWriter` with a Kafka `Consumer`.
+
+A `KafkaConsumerBridge` couples an `S3StoreWriter` and `BatchingStoreWriter` with a `KafkaConsumer`.
 It allows for efficient and configurable batching of data sourced from Kafka via a consumer group.
 
 ### Configuation
+
 Here is an example `KafkaConsumerBridge` configuration:
-```
+```ini
 [s3]
 endpoint="http://localhost:4566"
 bucket_name="my-bucket"
@@ -233,7 +250,7 @@ compact_items_threshold=100
 compact_objects_threshold=10
 
 [batcher]
-writer_thread_count=1,
+writer_thread_count=1
 writer_thread_queue_capacity=4096
 batch_check_interval_millis=100
 batch_flush_interval_millis=1000
@@ -255,19 +272,29 @@ keyspace_parser="Static(my_keyspace)"
 key_parser="RecordPartition"
 ```
 
+### UTF-8 Parsers
+
 `key_parser` and `keyspace_parser` can be configured as follows:
-* `Static(some_string)` - use the given string
-* `RecordHeader(my_header_name)` - parse the given header as UTF-8 from each record
-* `RecordKey` - parse each record key as UTF-8
-* `RecordPartition` - use the record partition
+
+| Value                          | Description
+|--------------------------------|------------
+| `Static(some_string)`          | Use the given string
+| `RecordHeader(my_header_name)` | Parse the given header as UTF-8 from each record
+| `RecordKey`                    | Parse each record key as UTF-8
+| `RecordPartition`              | Use the record partition
+
+### Number Parsers
 
 `nonce_parser` and `timestamp_parser` can be configured as follows:
-* `None` - always set to None
-* `RecordHeaderBigEndian(my_header_name)` - parse the given header as little-endian from each record
-* `RecordHeaderLittleEndian(my_header_name)` - parse the given header as big-endian from each record
-* `RecordHeaderUtf8(my_header_name)` - parse the given header as UTF-8 converted to a number from each record
-* `RecordKeyBigEndian` - parse each record key as little-endian
-* `RecordKeyLittleEndian` - parse each record key as big-endian
-* `RecordKeyUtf8` - parse each record key as UTF-8 converted to a number
-* `RecordOffset` - use the record offset
-* `RecordPartition` - use the record partition
+
+| Value                                      | Description                                      
+|--------------------------------------------|------------
+| `None`                                     | Always set to None
+| `RecordHeaderBigEndian(my_header_name)`    | Parse the given header as little-endian from each record
+| `RecordHeaderLittleEndian(my_header_name)` | Parse the given header as big-endian from each record
+| `RecordHeaderUtf8(my_header_name)`         | Parse the given header as UTF-8 converted to a number from each record
+| `RecordKeyBigEndian`                       | Parse each record key as little-endian
+| `RecordKeyLittleEndian`                    | Parse each record key as big-endian
+| `RecordKeyUtf8`                            | Parse each record key as UTF-8 converted to a number
+| `RecordOffset`                             | Use the record offset
+| `RecordPartition`                          | Use the record partition
