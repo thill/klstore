@@ -12,6 +12,7 @@ pub struct KafkaConsumerBridgeConfig {
     pub timestamp_parser: KafkaConsumerNumberParser,
     pub keyspace_parser: KafkaConsumerUtf8Parser,
     pub key_parser: KafkaConsumerUtf8Parser,
+    pub offset_commit_interval_seconds: u64,
 }
 impl KafkaConsumerBridgeConfig {
     pub fn new() -> Self {
@@ -22,6 +23,7 @@ impl KafkaConsumerBridgeConfig {
             timestamp_parser: KafkaConsumerNumberParser::None,
             keyspace_parser: KafkaConsumerUtf8Parser::None,
             key_parser: KafkaConsumerUtf8Parser::None,
+            offset_commit_interval_seconds: 60,
         }
     }
     pub fn set_consumer_config(mut self, v: HashMap<String, String>) -> Self {
@@ -52,16 +54,20 @@ impl KafkaConsumerBridgeConfig {
         self.key_parser = v;
         self
     }
+    pub fn set_offset_commit_interval_seconds(mut self, v: u64) -> Self {
+        self.offset_commit_interval_seconds = v;
+        self
+    }
     pub fn load(ini: &Ini) -> Result<Self, StoreError> {
         let kafka = ini.section(Some("kafka"));
         let parser = ini.section(Some("parser"));
         if let None = kafka {
-            return Err(StoreError::InvalidContinuation(
+            return Err(StoreError::BadConfiguration(
                 "[kafka] config missing".to_string(),
             ));
         }
         if let None = parser {
-            return Err(StoreError::InvalidContinuation(
+            return Err(StoreError::BadConfiguration(
                 "[parser] config missing".to_string(),
             ));
         }
@@ -69,11 +75,23 @@ impl KafkaConsumerBridgeConfig {
         let parser = parser.unwrap();
 
         let mut topic: Option<String> = None;
+        let mut offset_commit_interval_seconds = 60u64;
         let mut consumer_config: HashMap<String, String> = HashMap::new();
         for (k, v) in kafka.iter() {
             match k {
                 "topic" => {
                     topic = Some(v.to_string());
+                }
+                "offset_commit_interval_seconds" => {
+                    offset_commit_interval_seconds = match v.to_string().parse::<u64>() {
+                        Ok(v) => v,
+                        Err(_) => {
+                            return Err(StoreError::BadConfiguration(format!(
+                                "offset_commit_interval_seconds={}",
+                                v
+                            )))
+                        }
+                    }
                 }
                 _ => {
                     consumer_config.insert(k.to_string(), v.to_string());
@@ -93,6 +111,7 @@ impl KafkaConsumerBridgeConfig {
             timestamp_parser,
             keyspace_parser,
             key_parser,
+            offset_commit_interval_seconds,
         })
     }
 }

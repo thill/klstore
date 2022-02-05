@@ -125,7 +125,7 @@ impl S3StoreConfig {
     pub fn load(ini: &Ini) -> Result<Self, StoreError> {
         let s3 = match ini.section(Some("s3")) {
             None => {
-                return Err(StoreError::InvalidContinuation(
+                return Err(StoreError::BadConfiguration(
                     "[s3] config missing".to_string(),
                 ))
             }
@@ -147,14 +147,14 @@ impl S3StoreConfig {
         if let Some(v) = s3.get("path_style") {
             match bool::from_str(v) {
                 Ok(v) => cfg = cfg.set_path_style(v),
-                Err(_) => return Err(StoreError::InvalidContinuation("s3 path_style".to_string())),
+                Err(_) => return Err(StoreError::BadConfiguration("s3 path_style".to_string())),
             }
         }
         if let Some(v) = s3.get("use_default_credentials") {
             match bool::from_str(v) {
                 Ok(v) => cfg = cfg.set_use_default_credentials(v),
                 Err(_) => {
-                    return Err(StoreError::InvalidContinuation(
+                    return Err(StoreError::BadConfiguration(
                         "s3 use_default_credentials".to_string(),
                     ))
                 }
@@ -179,7 +179,7 @@ impl S3StoreConfig {
             match usize::from_str(v) {
                 Ok(v) => cfg = cfg.set_max_cached_keys(v),
                 Err(_) => {
-                    return Err(StoreError::InvalidContinuation(
+                    return Err(StoreError::BadConfiguration(
                         "s3 max_cached_keys".to_string(),
                     ))
                 }
@@ -189,7 +189,7 @@ impl S3StoreConfig {
             match u64::from_str(v) {
                 Ok(v) => cfg = cfg.set_compact_items_threshold(v),
                 Err(_) => {
-                    return Err(StoreError::InvalidContinuation(
+                    return Err(StoreError::BadConfiguration(
                         "s3 compact_items_threshold".to_string(),
                     ))
                 }
@@ -199,7 +199,7 @@ impl S3StoreConfig {
             match u64::from_str(v) {
                 Ok(v) => cfg = cfg.set_compact_size_threshold(v),
                 Err(_) => {
-                    return Err(StoreError::InvalidContinuation(
+                    return Err(StoreError::BadConfiguration(
                         "s3 compact_size_threshold".to_string(),
                     ))
                 }
@@ -209,7 +209,7 @@ impl S3StoreConfig {
             match u64::from_str(v) {
                 Ok(v) => cfg = cfg.set_compact_objects_threshold(v),
                 Err(_) => {
-                    return Err(StoreError::InvalidContinuation(
+                    return Err(StoreError::BadConfiguration(
                         "s3 compact_objects_threshold".to_string(),
                     ))
                 }
@@ -219,7 +219,7 @@ impl S3StoreConfig {
             match u64::from_str(v) {
                 Ok(v) => cfg = cfg.set_default_max_results(v),
                 Err(_) => {
-                    return Err(StoreError::InvalidContinuation(
+                    return Err(StoreError::BadConfiguration(
                         "s3 default_max_results".to_string(),
                     ))
                 }

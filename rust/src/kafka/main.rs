@@ -7,7 +7,7 @@ use ini::Ini;
 use klstore::*;
 use std::env;
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 fn main() {
     env_logger::init();
@@ -103,24 +103,18 @@ fn main() {
 
     // poll loop
     let poll_timeout = Duration::from_millis(100);
-    let mut record_count: usize = 0;
-    let mut next_log_time = SystemTime::now() + Duration::from_secs(5);
     log::info!("entering poll loop");
     while running.load(Ordering::Relaxed) {
         match kafka.poll(poll_timeout) {
-            Ok(count) => record_count += count,
+            Ok(_) => {}
             Err(StoreError::IOError(s)) => {
                 log::error!("IOError, Exiting: {}", s.to_string());
                 std::process::exit(exitcode::IOERR);
             }
             Err(err) => {
-                log::error!("Recoverable Error: {}", err.to_string());
+                log::error!("{}", err.to_string());
             }
         }
-        if SystemTime::now() > next_log_time {
-            log::info!("records handled: {}", record_count);
-            next_log_time = SystemTime::now() + Duration::from_secs(30);
-            record_count = 0;
-        }
     }
+    log::info!("exiting")
 }

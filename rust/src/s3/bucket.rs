@@ -6,7 +6,7 @@ use awscreds::Credentials;
 
 pub fn create(config: &S3StoreConfig) -> Result<Bucket, StoreError> {
     if let None = config.bucket_name {
-        return Err(StoreError::InvalidContinuation(
+        return Err(StoreError::BadConfiguration(
             "bucket_name not defined".to_string(),
         ));
     }
@@ -21,7 +21,7 @@ pub fn create(config: &S3StoreConfig) -> Result<Bucket, StoreError> {
             match region {
                 Ok(region) => region,
                 Err(_) => {
-                    return Err(StoreError::InvalidContinuation(format!(
+                    return Err(StoreError::BadConfiguration(format!(
                         "invalid region: {}",
                         config.region
                     )))
@@ -63,7 +63,7 @@ pub fn create(config: &S3StoreConfig) -> Result<Bucket, StoreError> {
         }
     };
     if let Err(err) = credentials {
-        return Err(StoreError::InvalidContinuation(format!(
+        return Err(StoreError::BadConfiguration(format!(
             "could not create credentials: {}",
             err.to_string()
         )));
@@ -72,7 +72,7 @@ pub fn create(config: &S3StoreConfig) -> Result<Bucket, StoreError> {
     if config.path_style {
         return match Bucket::new_with_path_style(&bucket_name, region, credentials) {
             Ok(bucket) => Ok(bucket),
-            Err(err) => Err(StoreError::InvalidContinuation(format!(
+            Err(err) => Err(StoreError::BadConfiguration(format!(
                 "could not create bucket: {}",
                 err.to_string(),
             ))),
@@ -80,7 +80,7 @@ pub fn create(config: &S3StoreConfig) -> Result<Bucket, StoreError> {
     } else {
         return match Bucket::new(&bucket_name, region, credentials) {
             Ok(bucket) => Ok(bucket),
-            Err(err) => Err(StoreError::InvalidContinuation(format!(
+            Err(err) => Err(StoreError::BadConfiguration(format!(
                 "could not create bucket: {}",
                 err.to_string(),
             ))),

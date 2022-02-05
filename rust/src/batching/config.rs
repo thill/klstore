@@ -61,7 +61,7 @@ impl BatchingStoreWriterConfig {
     pub fn load(ini: &Ini) -> Result<Self, StoreError> {
         let s3 = match ini.section(Some("s3")) {
             None => {
-                return Err(StoreError::InvalidContinuation(
+                return Err(StoreError::BadConfiguration(
                     "[s3] config missing".to_string(),
                 ))
             }
@@ -80,7 +80,7 @@ impl BatchingStoreWriterConfig {
             match usize::from_str(v) {
                 Ok(v) => cfg = cfg.set_writer_thread_count(v),
                 Err(_) => {
-                    return Err(StoreError::InvalidContinuation(
+                    return Err(StoreError::BadConfiguration(
                         "s3 writer_thread_count".to_string(),
                     ))
                 }
@@ -90,7 +90,7 @@ impl BatchingStoreWriterConfig {
             match usize::from_str(v) {
                 Ok(v) => cfg = cfg.set_writer_thread_queue_capacity(Some(v)),
                 Err(_) => {
-                    return Err(StoreError::InvalidContinuation(
+                    return Err(StoreError::BadConfiguration(
                         "s3 writer_thread_queue_capacity".to_string(),
                     ))
                 }
@@ -100,7 +100,7 @@ impl BatchingStoreWriterConfig {
             match u64::from_str(v) {
                 Ok(v) => cfg = cfg.set_batch_check_interval_millis(v),
                 Err(_) => {
-                    return Err(StoreError::InvalidContinuation(
+                    return Err(StoreError::BadConfiguration(
                         "s3 batch_check_interval_millis".to_string(),
                     ))
                 }
@@ -110,7 +110,7 @@ impl BatchingStoreWriterConfig {
             match u64::from_str(v) {
                 Ok(v) => cfg = cfg.set_batch_flush_interval_millis(v),
                 Err(_) => {
-                    return Err(StoreError::InvalidContinuation(
+                    return Err(StoreError::BadConfiguration(
                         "s3 batch_flush_interval_millis".to_string(),
                     ))
                 }
@@ -120,7 +120,7 @@ impl BatchingStoreWriterConfig {
             match u64::from_str(v) {
                 Ok(v) => cfg = cfg.set_batch_flush_item_count_threshold(v),
                 Err(_) => {
-                    return Err(StoreError::InvalidContinuation(
+                    return Err(StoreError::BadConfiguration(
                         "s3 batch_flush_item_count_threshold".to_string(),
                     ))
                 }
@@ -130,7 +130,7 @@ impl BatchingStoreWriterConfig {
             match u64::from_str(v) {
                 Ok(v) => cfg = cfg.set_batch_flush_size_threshold(v),
                 Err(_) => {
-                    return Err(StoreError::InvalidContinuation(
+                    return Err(StoreError::BadConfiguration(
                         "s3 batch_flush_size_threshold".to_string(),
                     ))
                 }

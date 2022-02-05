@@ -63,7 +63,7 @@ pub fn create_number_parser(cfg: Option<&str>) -> Result<KafkaConsumerNumberPars
             _ => {}
         }
     }
-    return Err(StoreError::InvalidContinuation(format!(
+    return Err(StoreError::BadConfiguration(format!(
         "invalid number parser: {}",
         cfg
     )));
@@ -92,7 +92,7 @@ pub fn create_utf8_parser(cfg: Option<&str>) -> Result<KafkaConsumerUtf8Parser, 
             _ => {}
         }
     }
-    return Err(StoreError::InvalidContinuation(format!(
+    return Err(StoreError::BadConfiguration(format!(
         "invalid number parser: {}",
         cfg
     )));

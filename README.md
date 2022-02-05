@@ -259,11 +259,10 @@ batch_flush_size_threshold=1000000
 
 [kafka]
 topic="inbound"
+offset_commit_interval_seconds=60
 group.id="test_group"
 bootstrap.servers="127.0.0.1:9092"
 auto.offset.reset=earliest
-enable.auto.offset.store=true
-enable.auto.commit=true
 
 [parser]
 nonce_parser="RecordOffset"
@@ -271,6 +270,11 @@ timestamp_parser="None"
 keyspace_parser="Static(my_keyspace)"
 key_parser="RecordPartition"
 ```
+
+### Consumer Group Offsets
+
+The `offset_commit_interval_seconds` property indicates how often the batcher will be flushed and offsets will be committed for the consumer group.
+Note that `enable.auto.commit` will always be set to `false` and `enable.auto.offset.store` will always be set to `true` so that the Kafka Bridge can deterministically commit offsets after writes.
 
 ### UTF-8 Parsers
 

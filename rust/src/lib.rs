@@ -85,6 +85,8 @@ pub enum StoreError {
     // Underlying data has an issue, likely not retryable
     BadData(String),
     // Bad configuration
+    BadConfiguration(String),
+    // Invalid continuation token
     InvalidContinuation(String),
     // Keyspace already existed
     KeyspaceAlreadyExists,
@@ -96,6 +98,7 @@ impl ToString for StoreError {
         match self {
             StoreError::IOError(s) => format!("IOError({})", s),
             StoreError::BadData(s) => format!("BadData({})", s),
+            StoreError::BadConfiguration(s) => format!("BadConfiguration({})", s),
             StoreError::InvalidContinuation(s) => format!("InvalidContinuation({})", s),
             StoreError::KeyspaceAlreadyExists => "KeyspaceAlreadyExists".to_string(),
             StoreError::KeyspaceNotFound => "KeyspaceNotFound".to_string(),
