@@ -129,15 +129,15 @@ impl<W: StoreWriter> KafkaConsumerBridge<W> {
                     return Ok(());
                 }
                 let timestamp = self.parse_timestamp(&message)?;
-                let items = vec![Insertion {
-                    value: message.payload().unwrap().to_vec(),
+                let inserts = vec![Insertion {
+                    record: message.payload().unwrap().to_vec(),
                     nonce: self.parse_nonce(&message)?,
                     timestamp: timestamp,
                 }];
-                self.writer.append_list(
+                self.writer.append(
                     &self.parse_keyspace(&message)?,
                     &self.parse_key(&message)?,
-                    items,
+                    inserts,
                 )?;
                 internal_mut
                     .commit_stats

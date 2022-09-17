@@ -11,15 +11,15 @@ pub struct SerializedInsertion {
     pub buffer: Vec<u8>,
 }
 
-pub fn serialize_insertion(items: &Vec<&Insertion>, next_offset: u64) -> SerializedInsertion {
+pub fn serialize_insertion(inserts: &Vec<&Insertion>, next_offset: u64) -> SerializedInsertion {
     let mut buffer: Vec<u8> = Vec::new();
     let mut min_timestamp = i64::MAX;
     let mut max_timestamp = i64::MIN;
     let first_insert_offset = next_offset;
     let mut cur_offset = first_insert_offset;
-    for item in (&items).iter() {
-        let timestamp = super::time::insertion_timestamp(&item);
-        let nonce = match item.nonce {
+    for insert in (&inserts).iter() {
+        let timestamp = super::time::insertion_timestamp(&insert);
+        let nonce = match insert.nonce {
             None => u128::MAX,
             Some(v) => v,
         };
@@ -28,9 +28,9 @@ pub fn serialize_insertion(items: &Vec<&Insertion>, next_offset: u64) -> Seriali
         append_u64(&mut buffer, cur_offset);
         append_i64(&mut buffer, timestamp);
         append_u128(&mut buffer, nonce);
-        append_u32(&mut buffer, item.value.len() as u32);
-        append_buffer(&mut buffer, &item.value);
-        append_u32(&mut buffer, 36 + item.value.len() as u32);
+        append_u32(&mut buffer, insert.record.len() as u32);
+        append_buffer(&mut buffer, &insert.record);
+        append_u32(&mut buffer, 36 + insert.record.len() as u32);
         cur_offset += 1;
     }
     SerializedInsertion {
@@ -43,86 +43,124 @@ pub fn serialize_insertion(items: &Vec<&Insertion>, next_offset: u64) -> Seriali
     }
 }
 
-pub struct DefaultedItemFilter {
+pub struct RecordFilter {
+    pub defined: bool,
     pub max_size: u64,
     pub start_offset: u64,
     pub start_timestamp: i64,
     pub start_nonce: u128,
-    pub nonce_defined: bool,
-    pub order: IterationOrder,
+    pub direction: Direction,
 }
-impl DefaultedItemFilter {
+impl RecordFilter {
     pub fn from(
-        filter: &Option<ItemFilter>,
+        position: &StartPosition,
         max_size: u64,
-        order: IterationOrder,
-    ) -> DefaultedItemFilter {
-        match order {
-            IterationOrder::Forwards => match filter {
-                Some(v) => DefaultedItemFilter {
+        direction: Direction,
+    ) -> RecordFilter {
+        match direction {
+            Direction::Forwards => match position {
+                StartPosition::Offset(v) => RecordFilter {
+                    defined: true,
                     max_size,
-                    start_offset: match v.start_offset {
-                        Some(v) => v,
-                        None => u64::MIN,
-                    },
-                    start_timestamp: match v.start_timestamp {
-                        Some(v) => v,
-                        None => i64::MIN,
-                    },
-                    start_nonce: match v.start_nonce {
-                        Some(v) => v,
-                        None => u128::MIN,
-                    },
-                    nonce_defined: true,
-                    order,
-                },
-                None => DefaultedItemFilter {
-                    max_size,
-                    start_offset: 0,
+                    start_offset: v.clone(),
                     start_timestamp: i64::MIN,
                     start_nonce: u128::MIN,
-                    nonce_defined: false,
-                    order,
+                    direction,
+                },
+                StartPosition::Nonce(v) => RecordFilter {
+                    defined: true,
+                    max_size,
+                    start_offset: u64::MIN,
+                    start_timestamp: i64::MIN,
+                    start_nonce: v.clone(),
+                    direction,
+                },
+                StartPosition::Timestamp(v) => RecordFilter {
+                    defined: true,
+                    max_size,
+                    start_offset: u64::MIN,
+                    start_timestamp: v.clone(),
+                    start_nonce: u128::MIN,
+                    direction,
+                },
+                StartPosition::First => RecordFilter {
+                    defined: false,
+                    max_size,
+                    start_offset: u64::MIN,
+                    start_timestamp: i64::MIN,
+                    start_nonce: u128::MIN,
+                    direction,
                 },
             },
-            IterationOrder::Backwards => match filter {
-                Some(v) => DefaultedItemFilter {
+            Direction::Backwards => match position {
+                StartPosition::Offset(v) => RecordFilter {
+                    defined: true,
                     max_size,
-                    start_offset: match v.start_offset {
-                        Some(v) => v,
-                        None => u64::MAX,
-                    },
-                    start_timestamp: match v.start_timestamp {
-                        Some(v) => v,
-                        None => i64::MAX,
-                    },
-                    start_nonce: match v.start_nonce {
-                        Some(v) => v,
-                        None => u128::MAX,
-                    },
-                    nonce_defined: true,
-                    order,
+                    start_offset: v.clone(),
+                    start_timestamp: i64::MAX,
+                    start_nonce: u128::MAX,
+                    direction,
                 },
-                None => DefaultedItemFilter {
+                StartPosition::Nonce(v) => RecordFilter {
+                    defined: true,
+                    max_size,
+                    start_offset: u64::MAX,
+                    start_timestamp: i64::MAX,
+                    start_nonce: v.clone(),
+                    direction,
+                },
+                StartPosition::Timestamp(v) => RecordFilter {
+                    defined: true,
+                    max_size,
+                    start_offset: u64::MAX,
+                    start_timestamp: v.clone(),
+                    start_nonce: u128::MAX,
+                    direction,
+                },
+                StartPosition::First => RecordFilter {
+                    defined: false,
                     max_size,
                     start_offset: u64::MAX,
                     start_timestamp: i64::MAX,
                     start_nonce: u128::MAX,
-                    nonce_defined: false,
-                    order,
+                    direction,
                 },
+            },
+        }
+    }
+    pub fn for_offset(
+        start_offset: u64,
+        max_size: u64,
+        direction: Direction,
+    ) -> RecordFilter {
+        match direction {
+            Direction::Forwards => RecordFilter {
+                defined: true,
+                max_size,
+                start_offset: start_offset,
+                start_timestamp: i64::MIN,
+                start_nonce: u128::MIN,
+                direction,
+            },
+            Direction::Backwards => RecordFilter {
+                defined: true,
+                max_size,
+                start_offset: start_offset,
+                start_timestamp: i64::MAX,
+                start_nonce: u128::MAX,
+                direction,
             },
         }
     }
 }
 
-fn item_in_range(
-    header: &ItemHeader,
-    filter: &DefaultedItemFilter,
+fn record_in_range(
+    header: &RecordHeader,
+    filter: &RecordFilter,
     found_first_match: bool,
 ) -> bool {
-    match filter.order {
-        IterationOrder::Forwards => {
+    match filter.direction {
+        Direction::Forwards => {
             if header.offset < filter.start_offset {
                 return false;
             }
@@ -131,18 +169,18 @@ fn item_in_range(
             }
             match header.nonce {
                 None => {
-                    if filter.nonce_defined && !found_first_match {
+                    if filter.defined && !found_first_match {
                         return false;
                     }
                 }
-                Some(item_nonce) => {
-                    if item_nonce < filter.start_nonce {
+                Some(record_nonce) => {
+                    if record_nonce < filter.start_nonce {
                         return false;
                     }
                 }
             }
         }
-        IterationOrder::Backwards => {
+        Direction::Backwards => {
             if header.offset > filter.start_offset {
                 return false;
             }
@@ -151,12 +189,12 @@ fn item_in_range(
             }
             match header.nonce {
                 None => {
-                    if filter.nonce_defined && !found_first_match {
+                    if filter.defined && !found_first_match {
                         return false;
                     }
                 }
-                Some(item_nonce) => {
-                    if item_nonce > filter.start_nonce {
+                Some(record_nonce) => {
+                    if record_nonce > filter.start_nonce {
                         return false;
                     }
                 }
@@ -167,25 +205,25 @@ fn item_in_range(
     return true;
 }
 
-pub fn deserialize_and_filter_items(
+pub fn deserialize_and_filter_records(
     buffer: &Vec<u8>,
-    items: &mut Vec<Item>,
-    filter: &DefaultedItemFilter,
+    records: &mut Vec<Record>,
+    filter: &RecordFilter,
     continuation_offset: u64,
 ) -> Result<bool, StoreError> {
-    match filter.order {
-        IterationOrder::Forwards => {
+    match filter.direction {
+        Direction::Forwards => {
             let mut pos: usize = 0;
-            while pos < buffer.len() && (items.len() as u64) < filter.max_size {
+            while pos < buffer.len() && (records.len() as u64) < filter.max_size {
                 // deserialize header and check if it's in range
-                let header = ItemHeader::deserialize(buffer, pos)?;
-                pos += ItemHeader::SIZE;
+                let header = RecordHeader::deserialize(buffer, pos)?;
+                pos += RecordHeader::SIZE;
                 if header.offset >= continuation_offset
-                    && item_in_range(&header, filter, !items.is_empty())
+                    && record_in_range(&header, filter, !records.is_empty())
                 {
-                    // matching, add to items
+                    // matching, add to records
                     let value = read_bytes_copy(buffer, pos, header.length as usize);
-                    items.push(Item {
+                    records.push(Record {
                         offset: header.offset,
                         timestamp: header.timestamp,
                         nonce: header.nonce,
@@ -198,21 +236,21 @@ pub fn deserialize_and_filter_items(
             // return if read fully
             return Ok(pos == buffer.len());
         }
-        IterationOrder::Backwards => {
+        Direction::Backwards => {
             let mut pos: usize = buffer.len();
-            while pos > 0 && (items.len() as u64) < filter.max_size {
-                // read total length of trailing item
+            while pos > 0 && (records.len() as u64) < filter.max_size {
+                // read total length of trailing record
                 pos -= 4;
                 let total_length = read_u32(buffer, pos)?;
                 pos -= total_length as usize;
                 // deserialize header and check if it's in range
-                let header = ItemHeader::deserialize(buffer, pos)?;
+                let header = RecordHeader::deserialize(buffer, pos)?;
                 if header.offset <= continuation_offset
-                    && item_in_range(&header, filter, !items.is_empty())
+                    && record_in_range(&header, filter, !records.is_empty())
                 {
-                    // matching, add to items
+                    // matching, add to records
                     let value = read_bytes_copy(buffer, pos, header.length as usize);
-                    items.push(Item {
+                    records.push(Record {
                         offset: header.offset,
                         timestamp: header.timestamp,
                         nonce: header.nonce,
@@ -227,13 +265,13 @@ pub fn deserialize_and_filter_items(
 }
 
 #[derive(Debug)]
-struct ItemHeader {
+struct RecordHeader {
     pub offset: u64,
     pub timestamp: i64,
     pub nonce: Option<u128>,
     pub length: u32,
 }
-impl ItemHeader {
+impl RecordHeader {
     const SIZE: usize = 36;
     fn deserialize(buffer: &[u8], mut pos: usize) -> Result<Self, StoreError> {
         let offset = read_u64(buffer, pos)?;
@@ -256,17 +294,17 @@ impl ItemHeader {
 }
 
 pub struct NonceFilterResult<'a> {
-    pub items: Vec<&'a Insertion>,
+    pub records: Vec<&'a Insertion>,
     pub first_nonce: Option<u128>,
     pub first_potential_nonce: u128,
     pub next_nonce: u128,
 }
 
-pub fn nonce_filter<'a>(items: &'a Vec<Insertion>, next_nonce: u128) -> NonceFilterResult<'a> {
+pub fn nonce_filter<'a>(records: &'a Vec<Insertion>, next_nonce: u128) -> NonceFilterResult<'a> {
     let mut first_nonce: Option<u128> = None;
     let first_potential_nonce = next_nonce;
     let mut next_nonce = next_nonce;
-    let items: Vec<&Insertion> = (&items)
+    let records: Vec<&Insertion> = (&records)
         .iter()
         .filter(|e| match e.nonce {
             Some(nonce) => {
@@ -284,7 +322,7 @@ pub fn nonce_filter<'a>(items: &'a Vec<Insertion>, next_nonce: u128) -> NonceFil
         })
         .collect();
     NonceFilterResult {
-        items,
+        records,
         first_nonce,
         first_potential_nonce,
         next_nonce,

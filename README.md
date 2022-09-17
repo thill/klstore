@@ -1,14 +1,14 @@
 # klstore
 
-Appendable and iterable key/list storage, backed by S3.
+Appendable and iterable key/log storage, backed by S3.
 
 
 ## General Overview
 
-Per key, a single writer appends to underlying storage, enabling many concurrent readers to iterate through pages of elements.
+Per key, a single writer appends to underlying storage, enabling many concurrent readers to iterate through pages of records.
 Writers are able to perform batching and nonce checking to enable high-throughput, exactly-once persistence of data.
-Readers are stateless and able to deterministically page backwards and forwards through a list, which is uniquely identified by a key per keyspace.
-Readers can begin iterating from any point in a list, searchable by either offset, timestamp, or nonce.
+Readers are stateless and able to deterministically page backwards and forwards through a log, which is uniquely identified by a key per keyspace.
+Readers can begin iterating from any point in a log, searchable by either offset, timestamp, or nonce.
 
 
 ## Terminology
@@ -17,8 +17,8 @@ Readers can begin iterating from any point in a list, searchable by either offse
 |------------|------------
 | `keyspace` | A collection of keys
 | `key`      | A unique key in a keyspace
-| `list`     | An iterable collection of elements, identified by a key
-| `offset`   | The position of a single element in a list
+| `log`      | An iterable collection of records, identified by a key
+| `offset`   | The position of a single record in a log
 | `nonce`    | An ever-growing number per key, used for de-duplication of records
 
 
@@ -26,7 +26,7 @@ Readers can begin iterating from any point in a list, searchable by either offse
 
 ### Reader
 
-The `StoreReader` trait expresses the API around reading from an S3-backed key/list store:
+The `StoreReader` trait expresses the API around reading from an S3-backed key/log store:
 ```rust
 pub trait StoreReader {
     /// read metadata for a keyspace, returning an error if the keyspace does not exist
@@ -39,58 +39,56 @@ pub trait StoreReader {
         key: &str,
     ) -> Result<Option<KeyMetadata>, StoreError>;
 
-    /// read the next page from a list, returning an empty list if the key does not exist
-    /// when no filter params and continuation is empty, it will start iterating from the first available offset.
-    /// continuation can be used to read from the next page
-    /// if specified, max_size determines the max elements to be returned, otherwise a configured default is used
-    /// filter opations can be specified to start reading from an item other than the first available offset
-    fn read_page(
+    /// read the first page of a log, returning an empty log if the key does not exist.
+    /// the page will begin iteration from the given StartPosition, advancing in the given Direction
+    /// if specified, page_size determines the max records to be returned, otherwise a configured default is used.
+    /// the Page result will contain an optional continuation token that can be passed to the read_next_page function.
+    fn read_first_page(
         &self,
         keyspace: &str,
         key: &str,
-        order: IterationOrder,
-        max_size: Option<u64>,
-        filter: Option<ItemFilter>,
-        continuation: Option<String>,
-    ) -> Result<ItemList, StoreError>;
+        direction: Direction,
+        start: StartPosition,
+        page_size: Option<u64>,
+    ) -> Result<Page, StoreError>;
+
+    /// read the next page of a log based on the given continuation token.
+    /// if specified, page_size determines the max records to be returned, otherwise a configured default is used.
+    fn read_next_page(
+        &self,
+        keyspace: &str,
+        key: &str,
+        continuation: String,
+        page_size: Option<u64>,
+    ) -> Result<Page, StoreError>;
 }
 ```
 
-An optional `ItemFilter` can be defined to begin iteration from an arbitrary element in a key's list:
+A returned page contains contains a vector of records. Iteration can continue using the returned `continuation_token`:
 ```rust
-pub struct ItemFilter {
-    pub start_offset: Option<u64>,
-    pub start_timestamp: Option<i64>,
-    pub start_nonce: Option<u128>,
-}
-```
-
-A returned item list represents a single page of results. Iteration can continue using the returned `continuation_token`:
-```rust
-pub struct ItemList {
+pub struct Page {
     pub keyspace: String,
     pub key: String,
-    pub items: Vec<Item>,
+    pub records: Vec<Record>,
     pub continuation: Option<String>,
-    pub stats: ListStats,
 }
 ```
 
 ### Writer
 
-The `StoreWriter` trait expresses the API around writing to an S3-backed key/list store:
+The `StoreWriter` trait expresses the API around writing to an S3-backed key/log store:
 ```rust
 pub trait StoreWriter {
     /// create a new keyspace, returning an error on failure or if the keyspace already existed
     fn create_keyspace(&self, keyspace: &str) -> Result<CreatedKeyspace, StoreError>;
 
-    /// append items to a list, creating a new key if necessary.
+    /// append records to a log, creating a new key if necessary.
     /// in some implementations, this may be dispatched and executed asynchronously.
-    fn append_list(
+    fn append(
         &self,
         keyspace: &str,
         key: &str,
-        items: Vec<Insertion>,
+        inserts: Vec<Insertion>,
     ) -> Result<(), StoreError>;
 
     /// flush pending writes for a specific key
@@ -105,11 +103,11 @@ pub trait StoreWriter {
 }
 ```
 
-The `append_list` function allows writing of a vector of items, each of which will be individually nonce-checked.
+The `append` function allows writing of a vector of records, each of which will be individually nonce-checked.
 The user has the option of specifiying a timestamp. When left undefined, the `StoreWriter` implementation will use the system clock.
 ```rust
 pub struct Insertion {
-    pub value: Vec<u8>,
+    pub record: Vec<u8>,
     pub nonce: Option<u128>,
     pub timestamp: Option<i64>,
 }
@@ -170,8 +168,8 @@ profile: Option<String>
 
 The following parameters are used to specify reader default behavior when not defined in a request:
 ```rust
-/// set the default number of max results used when none is defined in the request
-default_max_results: u64
+/// set the default page size used when none is defined in the request
+default_page_size: u64
 ```
 
 ### Writer-Specific Config
@@ -181,8 +179,8 @@ The following parameters are used to specify writer cache and compaction behavio
 /// set the maximum number of cached keys kept in memory in the writer, defaults to 100k
 max_cached_keys: usize,
 
-/// set the size threshold to trigger object compaction of a complete batch, defaults to 1MB
-compact_items_threshold: u64
+/// set the size threshold to trigger object compaction of a complete batch, defaults to 1000
+compact_records_threshold: u64
 
 /// set the size threshold to trigger object compaction of a complete batch, defaults to 1MiB
 compact_size_threshold: u64
@@ -216,8 +214,8 @@ batch_check_interval_millis: u64
 /// this interval plus processing time is the maximum additional delay introduced by batching.
 batch_flush_interval_millis: u64
 
-/// flush a batch upon reaching a specific item count. defaults to u64::MAX items.
-batch_flush_item_count_threshold: u64
+/// flush a batch upon reaching a specific record count. defaults to u64::MAX records.
+batch_flush_record_count_threshold: u64
 
 /// flush a batch upon reaching a specific batch size. defaults to 1MB.
 /// each key builds a separate batch, so this parameter and flush_interval+throughput will help determine memory requirements.
@@ -246,7 +244,7 @@ security_token="test"
 session_token="test"
 profile="test"
 compact_size_threshold=1000000
-compact_items_threshold=100
+compact_records_threshold=100
 compact_objects_threshold=10
 
 [batcher]
@@ -254,7 +252,7 @@ writer_thread_count=1
 writer_thread_queue_capacity=4096
 batch_check_interval_millis=100
 batch_flush_interval_millis=1000
-batch_flush_item_count_threshold=100000
+batch_flush_record_count_threshold=100000
 batch_flush_size_threshold=1000000
 
 [kafka]

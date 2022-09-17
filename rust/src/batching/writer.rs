@@ -7,12 +7,12 @@ use std::hash::{Hash, Hasher};
 use threadlanes::{LaneExecutor, ThreadLanes};
 
 struct Batch {
-    items: Vec<Insertion>,
+    inserts: Vec<Insertion>,
     size: u64,
     flush_timestamp: u64,
 }
 enum Task {
-    AppendList(String, String, Vec<Insertion>),
+    Append(String, String, Vec<Insertion>),
     FlushKey(String, String),
     FlushAll,
     CheckWrite,
@@ -21,7 +21,7 @@ struct TaskExecutor<W: StoreWriter> {
     writer: W,
     batches: LinkedHashMap<(String, String), Batch>,
     batch_flush_interval_millis: u64,
-    batch_flush_item_count_threshold: u64,
+    batch_flush_record_count_threshold: u64,
     batch_flush_size_threshold: u64,
 }
 impl<W: StoreWriter> TaskExecutor<W> {
@@ -30,7 +30,7 @@ impl<W: StoreWriter> TaskExecutor<W> {
             writer,
             batches: LinkedHashMap::new(),
             batch_flush_interval_millis: config.batch_flush_interval_millis,
-            batch_flush_item_count_threshold: config.batch_flush_item_count_threshold,
+            batch_flush_record_count_threshold: config.batch_flush_record_count_threshold,
             batch_flush_size_threshold: config.batch_flush_size_threshold,
         }
     }
@@ -38,41 +38,41 @@ impl<W: StoreWriter> TaskExecutor<W> {
 impl<W: StoreWriter> LaneExecutor<Task> for TaskExecutor<W> {
     fn execute(&mut self, task: Task) {
         match task {
-            Task::AppendList(keyspace, key, mut items) => {
+            Task::Append(keyspace, key, mut inserts) => {
                 // set None timestamps now
                 let now = time_now_as_millis();
-                for item in &mut items {
-                    if let None = item.timestamp {
-                        item.timestamp = Some(now as i64);
+                for insert in &mut inserts {
+                    if let None = insert.timestamp {
+                        insert.timestamp = Some(now as i64);
                     }
                 }
                 // handle batch
                 let batch_key = (keyspace, key);
-                let batch_size = (&items).iter().map(|e| e.value.len() as u64).sum();
+                let batch_size = (&inserts).iter().map(|e| e.record.len() as u64).sum();
                 match self.batches.get_mut(&batch_key) {
                     Some(batch) => {
                         // append to existing batch
-                        batch.items.append(&mut items);
+                        batch.inserts.append(&mut inserts);
                         batch.size += batch_size;
                         // check if batch should be written now due to count threshold
-                        if batch.items.len() as u64 >= self.batch_flush_item_count_threshold
+                        if batch.inserts.len() as u64 >= self.batch_flush_record_count_threshold
                             || batch.size >= self.batch_flush_size_threshold
                         {
                             // write now
                             let entry = self.batches.pop_front().unwrap();
                             self.writer
-                                .append_list(&entry.0 .0, &entry.0 .1, entry.1.items)
+                                .append(&entry.0 .0, &entry.0 .1, entry.1.inserts)
                                 .expect("append failed");
                         }
                     }
                     None => {
                         if self.batch_flush_interval_millis == 0
-                            || items.len() as u64 >= self.batch_flush_item_count_threshold
+                            || inserts.len() as u64 >= self.batch_flush_record_count_threshold
                             || batch_size >= self.batch_flush_size_threshold
                         {
                             // write now
                             self.writer
-                                .append_list(&batch_key.0, &batch_key.1, items)
+                                .append(&batch_key.0, &batch_key.1, inserts)
                                 .expect("append failed");
                         } else {
                             // start new batch
@@ -81,7 +81,7 @@ impl<W: StoreWriter> LaneExecutor<Task> for TaskExecutor<W> {
                                 Batch {
                                     flush_timestamp: now + self.batch_flush_interval_millis,
                                     size: batch_size,
-                                    items: items,
+                                    inserts: inserts,
                                 },
                             );
                         }
@@ -92,7 +92,7 @@ impl<W: StoreWriter> LaneExecutor<Task> for TaskExecutor<W> {
                 let batch_key = (keyspace, key);
                 if let Some(batch) = self.batches.remove(&batch_key) {
                     self.writer
-                        .append_list(&batch_key.0, &batch_key.1, batch.items)
+                        .append(&batch_key.0, &batch_key.1, batch.inserts)
                         .expect("append failed");
                 }
             }
@@ -100,7 +100,7 @@ impl<W: StoreWriter> LaneExecutor<Task> for TaskExecutor<W> {
                 while !self.batches.is_empty() {
                     let entry = self.batches.pop_front().unwrap();
                     self.writer
-                        .append_list(&entry.0 .0, &entry.0 .1, entry.1.items)
+                        .append(&entry.0 .0, &entry.0 .1, entry.1.inserts)
                         .expect("append failed");
                 }
             }
@@ -112,7 +112,7 @@ impl<W: StoreWriter> LaneExecutor<Task> for TaskExecutor<W> {
                 {
                     let entry = self.batches.pop_front().unwrap();
                     self.writer
-                        .append_list(&entry.0 .0, &entry.0 .1, entry.1.items)
+                        .append(&entry.0 .0, &entry.0 .1, entry.1.inserts)
                         .expect("append failed");
                 }
             }
@@ -148,15 +148,15 @@ impl<W: StoreWriter> StoreWriter for BatchingStoreWriter<W> {
     fn create_keyspace(&self, keyspace: &str) -> Result<CreatedKeyspace, StoreError> {
         self.writer.create_keyspace(keyspace)
     }
-    fn append_list(
+    fn append(
         &self,
         keyspace: &str,
         key: &str,
-        items: Vec<Insertion>,
+        inserts: Vec<Insertion>,
     ) -> Result<(), StoreError> {
         self.thread_lanes.send(
             lane(keyspace, key, self.writer_thread_count),
-            Task::AppendList(keyspace.to_string(), key.to_string(), items),
+            Task::Append(keyspace.to_string(), key.to_string(), inserts),
         );
         self.duty_cycle()?;
         Ok(())

@@ -1,6 +1,6 @@
 use crate::common::buffer::*;
-use crate::common::items::DefaultedItemFilter;
-use crate::{IterationOrder, KeyMetadata, StoreError};
+use crate::common::records::RecordFilter;
+use crate::{Direction, KeyMetadata, StoreError};
 use regex::Regex;
 
 #[derive(Clone, Debug)]
@@ -118,14 +118,14 @@ impl KeyPath {
             next_nonce: self.next_nonce,
         }
     }
-    pub fn matches(&self, filter: &DefaultedItemFilter) -> bool {
-        match filter.order {
-            IterationOrder::Forwards => {
+    pub fn matches(&self, filter: &RecordFilter) -> bool {
+        match filter.direction {
+            Direction::Forwards => {
                 return filter.start_offset <= self.last_offset
                     && filter.start_nonce < self.next_nonce
                     && filter.start_timestamp <= self.max_timestamp;
             }
-            IterationOrder::Backwards => {
+            Direction::Backwards => {
                 return filter.start_offset >= self.first_offset
                     && filter.start_nonce >= self.first_nonce
                     && filter.start_timestamp >= self.min_timestamp;

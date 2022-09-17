@@ -8,7 +8,7 @@ pub struct BatchingStoreWriterConfig {
     pub writer_thread_queue_capacity: Option<usize>,
     pub batch_check_interval_millis: u64,
     pub batch_flush_interval_millis: u64,
-    pub batch_flush_item_count_threshold: u64,
+    pub batch_flush_record_count_threshold: u64,
     pub batch_flush_size_threshold: u64,
 }
 impl BatchingStoreWriterConfig {
@@ -18,7 +18,7 @@ impl BatchingStoreWriterConfig {
             writer_thread_queue_capacity: None,         // unbound
             batch_check_interval_millis: 100,           // 100 milliseconds
             batch_flush_interval_millis: 1000,          // 1 second
-            batch_flush_item_count_threshold: u64::MAX, // unbound
+            batch_flush_record_count_threshold: u64::MAX, // unbound
             batch_flush_size_threshold: 1024 * 1024,    // 1MB
         }
     }
@@ -47,9 +47,9 @@ impl BatchingStoreWriterConfig {
         self.batch_flush_interval_millis = v;
         self
     }
-    /// flush a batch upon reaching a specific item count. defaults to u64::MAX items.
-    pub fn set_batch_flush_item_count_threshold(mut self, v: u64) -> Self {
-        self.batch_flush_item_count_threshold = v;
+    /// flush a batch upon reaching a specific record count. defaults to u64::MAX records.
+    pub fn set_batch_flush_record_count_threshold(mut self, v: u64) -> Self {
+        self.batch_flush_record_count_threshold = v;
         self
     }
     /// flush a batch upon reaching a specific batch size. defaults to 1MB.
@@ -116,12 +116,12 @@ impl BatchingStoreWriterConfig {
                 }
             }
         }
-        if let Some(v) = s3.get("batch_flush_item_count_threshold") {
+        if let Some(v) = s3.get("batch_flush_record_count_threshold") {
             match u64::from_str(v) {
-                Ok(v) => cfg = cfg.set_batch_flush_item_count_threshold(v),
+                Ok(v) => cfg = cfg.set_batch_flush_record_count_threshold(v),
                 Err(_) => {
                     return Err(StoreError::BadConfiguration(
-                        "s3 batch_flush_item_count_threshold".to_string(),
+                        "s3 batch_flush_record_count_threshold".to_string(),
                     ))
                 }
             }

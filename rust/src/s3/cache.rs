@@ -8,7 +8,7 @@ use aws_s3::bucket::Bucket;
 pub struct CachedKey {
     pub metadata: KeyMetadata,
     pub uncompacted_objects: u64,
-    pub uncompacted_items: u64,
+    pub uncompacted_records: u64,
     pub uncompacted_size: u64,
     pub prior_start_offset: u64,
     pub watermark: Watermark,
@@ -18,15 +18,15 @@ pub struct S3CacheFetcher {
     bucket: Bucket,
     root_prefix: String,
     key_path_parser: KeyPathParser,
-    compact_items_threshold: u64,
+    compact_records_threshold: u64,
 }
 impl S3CacheFetcher {
-    pub fn new(bucket: Bucket, root_prefix: String, compact_items_threshold: u64) -> Self {
+    pub fn new(bucket: Bucket, root_prefix: String, compact_records_threshold: u64) -> Self {
         Self {
             bucket,
             root_prefix,
             key_path_parser: KeyPathParser::new(),
-            compact_items_threshold,
+            compact_records_threshold,
         }
     }
 }
@@ -59,7 +59,7 @@ impl CacheFetcher<CachedKey> for S3CacheFetcher {
                     next_nonce: 0,
                     next_offset: 1,
                 },
-                uncompacted_items: 0,
+                uncompacted_records: 0,
                 uncompacted_objects: 0,
                 uncompacted_size: 0,
                 prior_start_offset: 0,
@@ -67,7 +67,7 @@ impl CacheFetcher<CachedKey> for S3CacheFetcher {
             });
         }
         // summarize pending from watermark
-        let mut uncompacted_items: u64 = 0;
+        let mut uncompacted_records: u64 = 0;
         let mut uncompacted_objects: u64 = 0;
         let mut uncompacted_size: u64 = 0;
         let mut next_nonce: u128 = 0;
@@ -76,14 +76,14 @@ impl CacheFetcher<CachedKey> for S3CacheFetcher {
         for i in 0..list.len() {
             match &self.key_path_parser.parse(&list[i]) {
                 Some(key) => {
-                    let object_items_count = key.last_offset - key.first_offset + 1;
+                    let object_records_count = key.last_offset - key.first_offset + 1;
                     next_nonce = key.next_nonce;
                     next_offset = key.last_offset + 1;
                     prior_start_offset = key.prior_start_offset;
-                    if i == 0 && object_items_count >= self.compact_items_threshold {
-                        // first item at watermark is a complete batch, skip it for counts
+                    if i == 0 && object_records_count >= self.compact_records_threshold {
+                        // first record at watermark is a complete batch, skip it for counts
                     } else {
-                        uncompacted_items += object_items_count;
+                        uncompacted_records += object_records_count;
                         uncompacted_size += key.size;
                         uncompacted_objects += 1;
                     }
@@ -96,7 +96,7 @@ impl CacheFetcher<CachedKey> for S3CacheFetcher {
                 next_nonce,
                 next_offset,
             },
-            uncompacted_items,
+            uncompacted_records,
             uncompacted_objects,
             uncompacted_size,
             prior_start_offset,

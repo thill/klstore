@@ -16,10 +16,10 @@ pub struct S3StoreConfig {
     pub session_token: Option<String>,
     pub profile: Option<String>,
     pub max_cached_keys: usize,
-    pub compact_items_threshold: u64,
+    pub compact_records_threshold: u64,
     pub compact_size_threshold: u64,
     pub compact_objects_threshold: u64,
-    pub default_max_results: u64,
+    pub default_page_size: u64,
 }
 impl S3StoreConfig {
     pub fn new() -> Self {
@@ -36,10 +36,10 @@ impl S3StoreConfig {
             session_token: None,
             profile: None,
             max_cached_keys: 100 * 1024, // 100k
-            compact_items_threshold: 1000,
+            compact_records_threshold: 1000,
             compact_size_threshold: 1024 * 1024, // 1MB
             compact_objects_threshold: 100,
-            default_max_results: 1000,
+            default_page_size: 1000,
         }
     }
     /// object prefix, defaults to an empty string, which would put the keyspace at the root of the bucket
@@ -102,9 +102,9 @@ impl S3StoreConfig {
         self.max_cached_keys = v;
         self
     }
-    /// set the item count threshold to trigger compaction of a complete batch, defaults to 1000
-    pub fn set_compact_items_threshold(mut self, v: u64) -> Self {
-        self.compact_items_threshold = v;
+    /// set the record count threshold to trigger compaction of a complete batch, defaults to 1000
+    pub fn set_compact_records_threshold(mut self, v: u64) -> Self {
+        self.compact_records_threshold = v;
         self
     }
     /// set the object count threshold to trigger compaction of a partial batch, defaults to 100
@@ -118,8 +118,8 @@ impl S3StoreConfig {
         self
     }
     /// set the default number of max results used when none is defined in the request
-    pub fn set_default_max_results(mut self, v: u64) -> Self {
-        self.default_max_results = v;
+    pub fn set_default_page_size(mut self, v: u64) -> Self {
+        self.default_page_size = v;
         self
     }
     pub fn load(ini: &Ini) -> Result<Self, StoreError> {
@@ -185,12 +185,12 @@ impl S3StoreConfig {
                 }
             }
         }
-        if let Some(v) = s3.get("compact_items_threshold") {
+        if let Some(v) = s3.get("compact_records_threshold") {
             match u64::from_str(v) {
-                Ok(v) => cfg = cfg.set_compact_items_threshold(v),
+                Ok(v) => cfg = cfg.set_compact_records_threshold(v),
                 Err(_) => {
                     return Err(StoreError::BadConfiguration(
-                        "s3 compact_items_threshold".to_string(),
+                        "s3 compact_records_threshold".to_string(),
                     ))
                 }
             }
@@ -215,12 +215,12 @@ impl S3StoreConfig {
                 }
             }
         }
-        if let Some(v) = s3.get("default_max_results") {
+        if let Some(v) = s3.get("default_page_size") {
             match u64::from_str(v) {
-                Ok(v) => cfg = cfg.set_default_max_results(v),
+                Ok(v) => cfg = cfg.set_default_page_size(v),
                 Err(_) => {
                     return Err(StoreError::BadConfiguration(
-                        "s3 default_max_results".to_string(),
+                        "s3 default_page_size".to_string(),
                     ))
                 }
             }

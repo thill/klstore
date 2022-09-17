@@ -23,19 +23,14 @@ pub type KafkaConsumerBridge<W> = kafka::KafkaConsumerBridge<W>;
 pub type KafkaConsumerNumberParser = kafka::KafkaConsumerNumberParser;
 pub type KafkaConsumerUtf8Parser = kafka::KafkaConsumerUtf8Parser;
 
-/// A Key-List Store Writer.
+/// A Key-Log Store Writer.
 /// Batching and nonce checking requires that a single key is bound to a single writer at any given time.
 pub trait StoreWriter {
     /// create a new keyspace, returning an error on failure or if the keyspace already existed
     fn create_keyspace(&self, keyspace: &str) -> Result<CreatedKeyspace, StoreError>;
-    /// append items to a list, creating a new key if necessary.
+    /// append records to a log, creating a new key if necessary.
     /// in some implementations, this may be dispatched and executed asynchronously.
-    fn append_list(
-        &self,
-        keyspace: &str,
-        key: &str,
-        items: Vec<Insertion>,
-    ) -> Result<(), StoreError>;
+    fn append(&self, keyspace: &str, key: &str, inserts: Vec<Insertion>) -> Result<(), StoreError>;
     /// flush pending writes for a specific key
     fn flush_key(&self, keyspace: &str, key: &str) -> Result<(), StoreError>;
     /// flush all pending asynchronous operations
@@ -45,7 +40,7 @@ pub trait StoreWriter {
     fn duty_cycle(&self) -> Result<(), StoreError>;
 }
 
-/// A Key-List Store Reader.
+/// A Key-Log Store Reader.
 /// Many readers can read from a single key concurrently.
 pub trait StoreReader {
     /// read metadata for a keyspace, returning an error if the keyspace does not exist
@@ -56,24 +51,31 @@ pub trait StoreReader {
         keyspace: &str,
         key: &str,
     ) -> Result<Option<KeyMetadata>, StoreError>;
-    /// read the next page from a list, returning an empty list if the key does not exist
-    /// when no filter params and continuation is empty, it will start iterating from the first available offset.
-    /// continuation can be used to read from the next page
-    /// if specified, max_size determines the max elements to be returned, otherwise a configured default is used
-    /// filter opations can be specified to start reading from an item other than the first available offset
-    fn read_page(
+    /// read the first page of a log, returning an empty log if the key does not exist.
+    /// the page will begin iteration from the given StartPosition, advancing in the given Direction
+    /// if specified, page_size determines the max records to be returned, otherwise a configured default is used.
+    /// the Page result will contain an optional continuation token that can be passed to the read_next_page function.
+    fn read_first_page(
         &self,
         keyspace: &str,
         key: &str,
-        order: IterationOrder,
-        max_size: Option<u64>,
-        filter: Option<ItemFilter>,
-        continuation: Option<String>,
-    ) -> Result<ItemList, StoreError>;
+        direction: Direction,
+        start: StartPosition,
+        page_size: Option<u64>,
+    ) -> Result<Page, StoreError>;
+    /// read the next page of a log based on the given continuation token.
+    /// if specified, page_size determines the max records to be returned, otherwise a configured default is used.
+    fn read_next_page(
+        &self,
+        keyspace: &str,
+        key: &str,
+        continuation: String,
+        page_size: Option<u64>,
+    ) -> Result<Page, StoreError>;
 }
 
 #[derive(Debug, Clone)]
-pub enum IterationOrder {
+pub enum Direction {
     Forwards,
     Backwards,
 }
@@ -124,43 +126,35 @@ pub struct KeyMetadata {
 
 #[derive(Debug)]
 pub struct Insertion {
-    pub value: Vec<u8>,
+    pub record: Vec<u8>,
     pub nonce: Option<u128>,
     pub timestamp: Option<i64>,
 }
 #[derive(Debug)]
-pub struct AppendList {
+pub struct Append {
     pub keyspace: String,
     pub key: String,
-    pub items: Vec<Insertion>,
+    pub records: Vec<Insertion>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ItemFilter {
-    pub start_offset: Option<u64>,
-    pub start_timestamp: Option<i64>,
-    pub start_nonce: Option<u128>,
+#[derive(Debug)]
+pub enum StartPosition {
+    First,
+    Nonce(u128),
+    Timestamp(i64),
+    Offset(u64),
 }
 #[derive(Debug, Clone)]
-pub struct Item {
+pub struct Record {
     pub offset: u64,
     pub timestamp: i64,
     pub nonce: Option<u128>,
     pub value: Vec<u8>,
 }
 #[derive(Debug, Clone)]
-pub struct ItemList {
+pub struct Page {
     pub keyspace: String,
     pub key: String,
-    pub items: Vec<Item>,
+    pub records: Vec<Record>,
     pub continuation: Option<String>,
-    pub stats: ListStats,
-}
-
-#[derive(Debug, Clone)]
-pub struct ListStats {
-    pub list_operation_count: u64,
-    pub read_operation_count: u64,
-    pub read_size_total: u64,
-    pub continuation_miss_count: u64,
 }

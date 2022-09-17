@@ -97,28 +97,81 @@ impl StoreReader for S3StoreReader {
             ));
         }
     }
-    fn read_page(
+    fn read_first_page(
         &self,
         keyspace: &str,
         key: &str,
-        order: IterationOrder,
-        max_results: Option<u64>,
-        filter: Option<ItemFilter>,
-        continuation: Option<String>,
-    ) -> Result<ItemList, StoreError> {
-        let mut stats = ListStats {
+        direction: Direction,
+        start: StartPosition,
+        page_size: Option<u64>,
+    ) -> Result<Page, StoreError> {
+        let mut stats = ReadStats {
             list_operation_count: 0,
             read_operation_count: 0,
             read_size_total: 0,
             continuation_miss_count: 0,
         };
         let data_prefix = KeyPath::prefix_data_only(&self.config.object_prefix, keyspace, key);
-        let max_results = match max_results {
-            None => self.config.default_max_results,
+        let page_size = match page_size {
+            None => self.config.default_page_size,
             Some(v) => v,
         };
 
-        // try collecting next page of items
+        // try collecting first page of records
+        let collect_outcome = collect_first_page(
+            &mut stats,
+            &self.bucket,
+            &self.config.object_prefix,
+            keyspace,
+            key,
+            &data_prefix,
+            &start,
+            page_size,
+            &self.key_path_parser,
+            &direction,
+        )?;
+
+        if collect_outcome.requires_retry && collect_outcome.records.is_empty() {
+            // failed with no results, return done so that the client doesn't end up in a continuous empty paging loop
+            return Ok(Page {
+                keyspace: keyspace.to_string(),
+                key: key.to_string(),
+                continuation: None,
+                records: collect_outcome.records,
+            });
+        }
+
+        log::debug!("s3 read_first_page stats: {:#?}", stats);
+
+        // collect worked, return results
+        return Ok(Page {
+            keyspace: keyspace.to_string(),
+            key: key.to_string(),
+            continuation: collect_outcome.continuation(),
+            records: collect_outcome.records,
+        });
+    }
+
+    fn read_next_page(
+        &self,
+        keyspace: &str,
+        key: &str,
+        continuation: String,
+        page_size: Option<u64>,
+    ) -> Result<Page, StoreError> {
+        let mut stats = ReadStats {
+            list_operation_count: 0,
+            read_operation_count: 0,
+            read_size_total: 0,
+            continuation_miss_count: 0,
+        };
+        let data_prefix = KeyPath::prefix_data_only(&self.config.object_prefix, keyspace, key);
+        let page_size = match page_size {
+            None => self.config.default_page_size,
+            Some(v) => v,
+        };
+
+        // try collecting next page of records
         let mut collect_outcome = collect_next_page(
             &mut stats,
             &self.bucket,
@@ -126,15 +179,13 @@ impl StoreReader for S3StoreReader {
             keyspace,
             key,
             &data_prefix,
-            &filter,
-            max_results,
+            page_size,
             &self.key_path_parser,
-            &order,
             &continuation,
             &self.continuation_parser,
         )?;
 
-        if collect_outcome.requires_retry && collect_outcome.items.is_empty() {
+        if collect_outcome.requires_retry && collect_outcome.records.is_empty() {
             // read failed with no results, likely timing of a concurrent compaction
             // try again now that compaction would be complete (new object is created before compacted objects are deleted)
             collect_outcome = collect_next_page(
@@ -144,33 +195,31 @@ impl StoreReader for S3StoreReader {
                 keyspace,
                 key,
                 &data_prefix,
-                &filter,
-                max_results,
+                page_size,
                 &self.key_path_parser,
-                &order,
                 &continuation,
                 &self.continuation_parser,
             )?;
         }
 
-        if collect_outcome.requires_retry && collect_outcome.items.is_empty() {
+        if collect_outcome.requires_retry && collect_outcome.records.is_empty() {
             // failed twice with no results, return done so that the client doesn't end up in a continuous empty paging loop
-            return Ok(ItemList {
+            return Ok(Page {
                 keyspace: keyspace.to_string(),
                 key: key.to_string(),
                 continuation: None,
-                items: collect_outcome.items,
-                stats,
+                records: collect_outcome.records,
             });
         }
 
+        log::debug!("s3 read_next_page stats: {:#?}", stats);
+
         // collect worked, return results
-        return Ok(ItemList {
+        return Ok(Page {
             keyspace: keyspace.to_string(),
             key: key.to_string(),
             continuation: collect_outcome.continuation(),
-            items: collect_outcome.items,
-            stats,
+            records: collect_outcome.records,
         });
     }
 }

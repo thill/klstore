@@ -1,8 +1,8 @@
 use super::bucket::*;
 use super::cache::*;
 use crate::common::cache::*;
-use crate::common::items::*;
 use crate::common::keypath::*;
+use crate::common::records::*;
 use crate::common::time::time_now_as_millis;
 use crate::s3::S3StoreConfig;
 use crate::s3::*;
@@ -24,7 +24,7 @@ impl S3StoreWriter {
                 S3CacheFetcher::new(
                     bucket,
                     config.object_prefix.clone(),
-                    config.compact_items_threshold,
+                    config.compact_records_threshold,
                 ),
                 config.max_cached_keys,
             ),
@@ -55,23 +55,18 @@ impl StoreWriter for S3StoreWriter {
             Err(err) => Err(err),
         }
     }
-    fn append_list(
-        &self,
-        keyspace: &str,
-        key: &str,
-        items: Vec<Insertion>,
-    ) -> Result<(), StoreError> {
+    fn append(&self, keyspace: &str, key: &str, records: Vec<Insertion>) -> Result<(), StoreError> {
         let mut kinfo = self.write_cache.get_or_read_key(&keyspace, &key)?;
         // determine what will be written
-        let filtered = nonce_filter(&items, kinfo.metadata.next_nonce);
+        let filtered = nonce_filter(&records, kinfo.metadata.next_nonce);
 
         // nothing to insert due to nonce checking
-        if filtered.items.is_empty() {
+        if filtered.records.is_empty() {
             return Ok(());
         }
 
         // create buffer
-        let serialized = serialize_insertion(&filtered.items, kinfo.metadata.next_offset);
+        let serialized = serialize_insertion(&filtered.records, kinfo.metadata.next_offset);
 
         // write buffer to bucket
         let object_key = KeyPath {
@@ -92,7 +87,7 @@ impl StoreWriter for S3StoreWriter {
 
         kinfo.metadata.next_nonce = filtered.next_nonce;
         kinfo.metadata.next_offset = serialized.next_offset;
-        kinfo.uncompacted_items += filtered.items.len() as u64;
+        kinfo.uncompacted_records += filtered.records.len() as u64;
         kinfo.uncompacted_size += serialized.buffer.len() as u64;
         kinfo.uncompacted_objects += 1;
         kinfo.prior_start_offset = serialized.first_insert_offset;
@@ -105,7 +100,7 @@ impl StoreWriter for S3StoreWriter {
             keyspace,
             key,
             &self.key_path_parser,
-            self.config.compact_items_threshold,
+            self.config.compact_records_threshold,
             self.config.compact_size_threshold,
             self.config.compact_objects_threshold,
         )?;
@@ -137,11 +132,11 @@ pub fn check_compaction(
     keyspace: &str,
     key: &str,
     key_path_parser: &KeyPathParser,
-    compact_items_threshold: u64,
+    compact_records_threshold: u64,
     compact_size_threshold: u64,
     compact_objects_threshold: u64,
 ) -> Result<CachedKey, StoreError> {
-    if key_data.uncompacted_items < compact_items_threshold
+    if key_data.uncompacted_records < compact_records_threshold
         && key_data.uncompacted_objects < compact_objects_threshold
         && key_data.uncompacted_size < compact_size_threshold
     {
@@ -149,9 +144,9 @@ pub fn check_compaction(
         return Ok(key_data);
     }
 
-    // only advance watermark if size or item count is surpassed
+    // only advance watermark if size or record count is surpassed
     // this will leave pending a compaction due to object count
-    let advance_watermark = key_data.uncompacted_items >= compact_items_threshold
+    let advance_watermark = key_data.uncompacted_records >= compact_records_threshold
         || key_data.uncompacted_size >= compact_size_threshold;
 
     // batch everything after matching watermark object
@@ -177,7 +172,7 @@ pub fn check_compaction(
         // return this object as an entire batch
         return Ok(CachedKey {
             metadata: key_data.metadata,
-            uncompacted_items: 0,
+            uncompacted_records: 0,
             uncompacted_objects: 0,
             uncompacted_size: 0,
             prior_start_offset: key_data.prior_start_offset,
@@ -225,7 +220,7 @@ pub fn check_compaction(
         // reset cache info
         return Ok(CachedKey {
             metadata: key_data.metadata,
-            uncompacted_items: 0,
+            uncompacted_records: 0,
             uncompacted_objects: 0,
             uncompacted_size: 0,
             prior_start_offset: first_key.first_offset,
@@ -235,7 +230,7 @@ pub fn check_compaction(
         // only reset uncompacted_objects, do not advance watermark
         return Ok(CachedKey {
             metadata: key_data.metadata,
-            uncompacted_items: key_data.uncompacted_items,
+            uncompacted_records: key_data.uncompacted_records,
             uncompacted_objects: 1,
             uncompacted_size: key_data.uncompacted_size,
             prior_start_offset: first_key.first_offset,

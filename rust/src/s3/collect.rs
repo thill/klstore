@@ -1,6 +1,6 @@
 use super::bucket::*;
-use crate::common::items::*;
 use crate::common::keypath::*;
+use crate::common::records::*;
 use crate::*;
 use aws_s3::bucket::Bucket;
 use regex::Regex;
@@ -11,25 +11,38 @@ pub struct ContinuationParser {
 impl ContinuationParser {
     pub fn new() -> Self {
         Self {
-            rex: Regex::new(r"^(\d+):(\d+)$").unwrap(),
+            rex: Regex::new(r"^[fb]:(\d+):(\d+)$").unwrap(),
         }
     }
-    fn parse(&self, s: &str) -> Result<Position, StoreError> {
+    fn parse(&self, s: &str) -> Result<(Direction, Position), StoreError> {
         match self.rex.captures(s) {
             None => Err(StoreError::InvalidContinuation(s.to_string())),
             Some(cap) => {
-                let next_offset = match cap[1].parse::<u64>() {
+                let direction = match &cap[1] {
+                    "f" => Direction::Forwards,
+                    "b" => Direction::Backwards,
+                    _ => return Err(StoreError::InvalidContinuation(s.to_string())),
+                };
+                let next_offset = match cap[2].parse::<u64>() {
                     Ok(v) => v,
                     Err(_) => return Err(StoreError::InvalidContinuation(s.to_string())),
                 };
-                let last_start_offset = match cap[2].parse::<u64>() {
+                let last_start_offset = match cap[3].parse::<u64>() {
                     Ok(v) => v,
                     Err(_) => return Err(StoreError::InvalidContinuation(s.to_string())),
                 };
-                Ok(Position::new(next_offset, last_start_offset))
+                Ok((direction, Position::new(next_offset, last_start_offset)))
             }
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ReadStats {
+    pub list_operation_count: u64,
+    pub read_operation_count: u64,
+    pub read_size_total: u64,
+    pub continuation_miss_count: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -51,53 +64,61 @@ impl Position {
 }
 
 pub struct CollectOutcome {
-    /// contains items that were read, or None if the first matching object did not exist
-    pub items: Vec<Item>,
+    /// contains records that were read, or None if the first matching object did not exist
+    pub records: Vec<Record>,
     /// contains position, None if iteration end was reached
     pub position: Option<Position>,
     /// marks final object as missing
     pub requires_retry: bool,
 }
 impl CollectOutcome {
-    pub fn finished(items: Vec<Item>) -> Self {
+    pub fn finished(records: Vec<Record>) -> Self {
         Self {
-            items: items,
+            records: records,
             position: None,
             requires_retry: false,
         }
     }
-    pub fn progress(items: Vec<Item>, last_position: &Position, anchor_start_offset: u64) -> Self {
-        if items.is_empty() {
+    pub fn progress(
+        records: Vec<Record>,
+        last_position: &Position,
+        anchor_start_offset: u64,
+    ) -> Self {
+        if records.is_empty() {
             return Self {
-                items: items,
+                records: records,
                 position: Some(last_position.clone()),
                 requires_retry: false,
             };
         } else {
             return Self {
                 position: Some(Position::new(
-                    items.last().unwrap().offset + 1,
+                    records.last().unwrap().offset + 1,
                     anchor_start_offset,
                 )),
-                items: items,
+                records: records,
                 requires_retry: false,
             };
         }
     }
-    pub fn missing(items: Vec<Item>, last_position: &Position, anchor_start_offset: u64) -> Self {
-        if items.is_empty() {
+    pub fn missing(
+        records: Vec<Record>,
+        last_position: &Position,
+        anchor_start_offset: u64,
+    ) -> Self {
+        if records.is_empty() {
             return Self {
-                items: items,
+                records: records,
                 position: Some(last_position.clone()),
                 requires_retry: true,
             };
         } else {
             return Self {
                 position: Some(Position::new(
-                    items.last().unwrap().offset + 1,
+                    records.last().unwrap().offset + 1,
                     anchor_start_offset,
                 )),
-                items: items,
+                records: records,
                 requires_retry: true,
             };
         }
@@ -110,48 +131,22 @@ impl CollectOutcome {
     }
 }
 
-pub fn collect_next_page(
-    stats: &mut ListStats,
+pub fn collect_first_page(
+    stats: &mut ReadStats,
     bucket: &Bucket,
     root_prefix: &str,
     keyspace: &str,
     key: &str,
     data_prefix: &str,
-    filter: &Option<ItemFilter>,
+    start: &StartPosition,
     max_results: u64,
     key_path_parser: &KeyPathParser,
-    order: &IterationOrder,
-    continuation: &Option<String>,
-    continuation_parser: &ContinuationParser,
+    direction: &Direction,
 ) -> Result<CollectOutcome, StoreError> {
-    // create item filter with min/max defaults to avoid Option checks
-    let mut defaulted_item_filter = DefaultedItemFilter::from(filter, max_results, order.clone());
+    // create record filter with min/max defaults to avoid Option checks
+    let record_filter = RecordFilter::from(start, max_results, direction.clone());
 
-    // if continuation is defined, try to use it
-    if let Some(continuation) = continuation {
-        let position = continuation_parser.parse(&continuation)?;
-        let collect_outcome = collect_items_from_position(
-            stats,
-            &position,
-            bucket,
-            root_prefix,
-            keyspace,
-            key,
-            data_prefix,
-            &defaulted_item_filter,
-            key_path_parser,
-            order,
-        )?;
-        if !collect_outcome.requires_retry {
-            // continuation worked, return results
-            return Ok(collect_outcome);
-        }
-        // otherwise, fall back to normal filter search using continuation position
-        stats.continuation_miss_count += 1;
-        defaulted_item_filter.start_offset = position.next_offset
-    }
-
-    // continuation was not defined or failed, use filter
+    // no continuation for first page, use filter
     let position = match search_start_from(
         stats,
         bucket,
@@ -159,7 +154,7 @@ pub fn collect_next_page(
         keyspace,
         key,
         data_prefix,
-        &defaulted_item_filter,
+        &record_filter,
         key_path_parser,
     )? {
         // no filter match -> no results
@@ -171,7 +166,7 @@ pub fn collect_next_page(
     };
 
     // iterate and parse until max_results is filled or end of paging is reached
-    return collect_items_from_position(
+    return collect_records_from_position(
         stats,
         &position,
         bucket,
@@ -179,26 +174,99 @@ pub fn collect_next_page(
         keyspace,
         key,
         data_prefix,
-        &defaulted_item_filter,
+        &record_filter,
         key_path_parser,
-        order,
+        direction,
     );
 }
 
-pub fn collect_items_from_position(
-    stats: &mut ListStats,
+pub fn collect_next_page(
+    stats: &mut ReadStats,
+    bucket: &Bucket,
+    root_prefix: &str,
+    keyspace: &str,
+    key: &str,
+    data_prefix: &str,
+    max_results: u64,
+    key_path_parser: &KeyPathParser,
+    continuation: &String,
+    continuation_parser: &ContinuationParser,
+) -> Result<CollectOutcome, StoreError> {
+    // create record filter with min/max defaults to avoid Option checks
+    let (direction, position) = continuation_parser.parse(continuation)?;
+    let mut record_filter =
+        RecordFilter::for_offset(position.next_offset, max_results, direction.clone());
+
+    // try to use continuation
+    let collect_outcome = collect_records_from_position(
+        stats,
+        &position,
+        bucket,
+        root_prefix,
+        keyspace,
+        key,
+        data_prefix,
+        &record_filter,
+        key_path_parser,
+        &direction,
+    )?;
+    if collect_outcome.requires_retry {
+        // failed, fall back to normal filter search using continuation position
+        stats.continuation_miss_count += 1;
+        record_filter.start_offset = position.next_offset;
+    } else {
+        // continuation worked, return results
+        return Ok(collect_outcome);
+    }
+
+    // continuation failed use filter
+    let position = match search_start_from(
+        stats,
+        bucket,
+        root_prefix,
+        keyspace,
+        key,
+        data_prefix,
+        &record_filter,
+        key_path_parser,
+    )? {
+        // no filter match -> no results
+        None => {
+            return Ok(CollectOutcome::finished(Vec::new()));
+        }
+        // filter match -> start from there
+        Some(position) => position,
+    };
+
+    // iterate and parse until max_results is filled or end of paging is reached
+    return collect_records_from_position(
+        stats,
+        &position,
+        bucket,
+        root_prefix,
+        keyspace,
+        key,
+        data_prefix,
+        &record_filter,
+        key_path_parser,
+        &direction,
+    );
+}
+
+pub fn collect_records_from_position(
+    stats: &mut ReadStats,
     start_position: &Position,
     bucket: &Bucket,
     root_prefix: &str,
     keyspace: &str,
     key: &str,
     data_prefix: &str,
-    item_filter: &DefaultedItemFilter,
+    record_filter: &RecordFilter,
     key_path_parser: &KeyPathParser,
-    order: &IterationOrder,
+    direction: &Direction,
 ) -> Result<CollectOutcome, StoreError> {
-    match order {
-        IterationOrder::Forwards => collect_items_forward_from_position(
+    match direction {
+        Direction::Forwards => collect_records_forward_from_position(
             stats,
             start_position,
             bucket,
@@ -206,10 +274,10 @@ pub fn collect_items_from_position(
             keyspace,
             key,
             data_prefix,
-            item_filter,
+            record_filter,
             key_path_parser,
         ),
-        IterationOrder::Backwards => collect_items_backward_from_position(
+        Direction::Backwards => collect_records_backward_from_position(
             stats,
             start_position,
             bucket,
@@ -217,24 +285,24 @@ pub fn collect_items_from_position(
             keyspace,
             key,
             data_prefix,
-            item_filter,
+            record_filter,
             key_path_parser,
         ),
     }
 }
 
-pub fn collect_items_forward_from_position(
-    stats: &mut ListStats,
+pub fn collect_records_forward_from_position(
+    stats: &mut ReadStats,
     start_position: &Position,
     bucket: &Bucket,
     root_prefix: &str,
     keyspace: &str,
     key: &str,
     data_prefix: &str,
-    item_filter: &DefaultedItemFilter,
+    record_filter: &RecordFilter,
     key_path_parser: &KeyPathParser,
 ) -> Result<CollectOutcome, StoreError> {
-    let mut items: Vec<Item> = Vec::new();
+    let mut records: Vec<Record> = Vec::new();
     let mut s3_cont_token: Option<String> = None;
     let mut cur_position = start_position.clone();
     let start_from = cur_position.get_start_from(root_prefix, keyspace, key);
@@ -253,24 +321,24 @@ pub fn collect_items_forward_from_position(
             if cur_position.next_offset < key_path.first_offset {
                 // concurrent compaction of expected object lead to object missing since last page, return results so far
                 return Ok(CollectOutcome::missing(
-                    items,
+                    records,
                     &cur_position,
                     key_path.first_offset,
                 ));
             }
-            let (new_items, read_fully) =
-                collect_object(stats, bucket, &object_key, item_filter, &cur_position)?;
-            match new_items {
+            let (new_records, read_fully) =
+                collect_object(stats, bucket, &object_key, record_filter, &cur_position)?;
+            match new_records {
                 None => {
                     // concurrent compaction of expected object lead to object missing since last page, return results so far
                     return Ok(CollectOutcome::missing(
-                        items,
+                        records,
                         &cur_position,
                         key_path.first_offset,
                     ));
                 }
-                Some(mut new_items) => {
-                    items.append(&mut new_items);
+                Some(mut new_records) => {
+                    records.append(&mut new_records);
                 }
             };
 
@@ -279,14 +347,14 @@ pub fn collect_items_forward_from_position(
                 true => key_path.last_offset + 1, // anchor to next object
             };
 
-            if items.len() > 0 && items.last().unwrap().offset == u64::MAX {
+            if records.len() > 0 && records.last().unwrap().offset == u64::MAX {
                 // reached end of offset space
-                return Ok(CollectOutcome::finished(items));
+                return Ok(CollectOutcome::finished(records));
             }
 
-            if items.len() as u64 >= item_filter.max_size {
+            if records.len() as u64 >= record_filter.max_size {
                 // max results have been retreived, return full page
-                return Ok(CollectOutcome::progress(items, &cur_position, anchor));
+                return Ok(CollectOutcome::progress(records, &cur_position, anchor));
             }
 
             // advance position for next page
@@ -295,24 +363,24 @@ pub fn collect_items_forward_from_position(
         }
         if let None = next_s3_cont_token {
             // no more data to find
-            return Ok(CollectOutcome::finished(items));
+            return Ok(CollectOutcome::finished(records));
         }
         s3_cont_token = next_s3_cont_token;
     }
 }
 
-fn collect_items_backward_from_position(
-    stats: &mut ListStats,
+fn collect_records_backward_from_position(
+    stats: &mut ReadStats,
     start_position: &Position,
     bucket: &Bucket,
     root_prefix: &str,
     keyspace: &str,
     key: &str,
     data_prefix: &str,
-    item_filter: &DefaultedItemFilter,
+    record_filter: &RecordFilter,
     key_path_parser: &KeyPathParser,
 ) -> Result<CollectOutcome, StoreError> {
-    let mut items: Vec<Item> = Vec::new();
+    let mut records: Vec<Record> = Vec::new();
     let mut cur_position = start_position.clone();
 
     loop {
@@ -337,25 +405,25 @@ fn collect_items_backward_from_position(
         if cur_position.next_offset > key_path.last_offset {
             // concurrent compaction of expected object lead to object missing since last page, return results so far
             return Ok(CollectOutcome::missing(
-                items,
+                records,
                 &cur_position,
                 key_path.prior_start_offset,
             ));
         }
 
-        let (new_items, read_fully) =
-            collect_object(stats, bucket, &object_key, item_filter, &cur_position)?;
-        match new_items {
+        let (new_records, read_fully) =
+            collect_object(stats, bucket, &object_key, record_filter, &cur_position)?;
+        match new_records {
             None => {
                 // concurrent compaction of expected object lead to object missing since list, return results so far
                 return Ok(CollectOutcome::missing(
-                    items,
+                    records,
                     &cur_position,
                     key_path.first_offset,
                 ));
             }
-            Some(mut new_items) => {
-                items.append(&mut new_items);
+            Some(mut new_records) => {
+                records.append(&mut new_records);
             }
         };
 
@@ -364,24 +432,24 @@ fn collect_items_backward_from_position(
             true => key_path.prior_start_offset, // anchor to next object
         };
 
-        if items.len() == 0 {
+        if records.len() == 0 {
             // nothing was read from the object, hit an unexpected end
-            return Ok(CollectOutcome::finished(items));
+            return Ok(CollectOutcome::finished(records));
         }
 
-        if items.len() > 0 && items.last().unwrap().offset == u64::MAX {
+        if records.len() > 0 && records.last().unwrap().offset == u64::MAX {
             // reached end of offset space
-            return Ok(CollectOutcome::finished(items));
+            return Ok(CollectOutcome::finished(records));
         }
 
         if cur_position.next_offset == 0 {
             // no more data to find
-            return Ok(CollectOutcome::finished(items));
+            return Ok(CollectOutcome::finished(records));
         }
 
-        if items.len() as u64 >= item_filter.max_size {
+        if records.len() as u64 >= record_filter.max_size {
             // max results have been retreived, return full page
-            return Ok(CollectOutcome::progress(items, &cur_position, anchor));
+            return Ok(CollectOutcome::progress(records, &cur_position, anchor));
         }
 
         // advance position for next page
@@ -391,14 +459,14 @@ fn collect_items_backward_from_position(
 }
 
 fn collect_object(
-    stats: &mut ListStats,
+    stats: &mut ReadStats,
     bucket: &Bucket,
     object_key: &str,
-    item_filter: &DefaultedItemFilter,
+    record_filter: &RecordFilter,
     position: &Position,
-) -> Result<(Option<Vec<Item>>, bool), StoreError> {
+) -> Result<(Option<Vec<Record>>, bool), StoreError> {
     // read, deserialize, and further filter next object
-    let mut items: Vec<Item> = Vec::new();
+    let mut records: Vec<Record> = Vec::new();
     let contents = match get_object_optional(bucket, object_key.to_string())? {
         None => return Ok((None, false)), // compaction may have invalidated next object
         Some(contents) => contents,
@@ -406,18 +474,18 @@ fn collect_object(
     stats.read_operation_count += 1;
     stats.read_size_total += contents.len() as u64;
     let read_fully =
-        deserialize_and_filter_items(&contents, &mut items, item_filter, position.next_offset)?;
-    return Ok((Some(items), read_fully));
+        deserialize_and_filter_records(&contents, &mut records, record_filter, position.next_offset)?;
+    return Ok((Some(records), read_fully));
 }
 
 fn search_start_from(
-    stats: &mut ListStats,
+    stats: &mut ReadStats,
     bucket: &Bucket,
     object_prefix: &str,
     keyspace: &str,
     key: &str,
     data_prefix: &str,
-    filter: &DefaultedItemFilter,
+    filter: &RecordFilter,
     key_path_parser: &KeyPathParser,
 ) -> Result<Option<Position>, StoreError> {
     // always check first 1000 results first
@@ -439,8 +507,8 @@ fn search_start_from(
 
     // optimization: check if iteration starts in the first page
     let last_path_in_first_page = key_path_parser.parse_or_error(first_page.last().unwrap())?;
-    match filter.order {
-        IterationOrder::Forwards => {
+    match filter.direction {
+        Direction::Forwards => {
             if last_path_in_first_page.matches(filter) {
                 // last key matches, iterations start in the first page
                 return Ok(find_start_from_in_page(
@@ -450,7 +518,7 @@ fn search_start_from(
                 ));
             }
         }
-        IterationOrder::Backwards => {
+        Direction::Backwards => {
             if !last_path_in_first_page.matches(filter) {
                 // last key does not match, iteration starts in the first page
                 return Ok(find_start_from_in_page(
@@ -470,7 +538,7 @@ fn search_start_from(
     };
 
     // optimization: if backwards iteration and last key matches, start from there
-    if let IterationOrder::Backwards = filter.order {
+    if let Direction::Backwards = filter.direction {
         if last_path_in_key.matches(filter) {
             return Ok(Some(Position::new(
                 filter.start_offset,
@@ -479,7 +547,7 @@ fn search_start_from(
         }
     }
 
-    // result is not in the first page or the last element, search for it between found min and max offsets
+    // result is not in the first page or the last record, search for it between found min and max offsets
     let first_path_in_key = key_path_parser.parse_or_error(first_page.last().unwrap())?;
     return binary_search_start_from(
         stats,
@@ -495,7 +563,7 @@ fn search_start_from(
     );
 }
 fn last_path_for_key(
-    stats: &mut ListStats,
+    stats: &mut ReadStats,
     bucket: &Bucket,
     object_prefix: &str,
     keyspace: &str,
@@ -531,19 +599,19 @@ fn last_path_for_key(
 }
 
 fn binary_search_start_from(
-    stats: &mut ListStats,
+    stats: &mut ReadStats,
     bucket: &Bucket,
     object_prefix: &str,
     keyspace: &str,
     key: &str,
     data_prefix: &str,
-    filter: &DefaultedItemFilter,
+    filter: &RecordFilter,
     key_path_parser: &KeyPathParser,
     start_min: u64,
     start_max: u64,
 ) -> Result<Option<Position>, StoreError> {
-    match filter.order {
-        IterationOrder::Forwards => binary_search_start_from_forwards(
+    match filter.direction {
+        Direction::Forwards => binary_search_start_from_forwards(
             stats,
             bucket,
             object_prefix,
@@ -555,7 +623,7 @@ fn binary_search_start_from(
             start_min,
             start_max,
         ),
-        IterationOrder::Backwards => binary_search_start_from_backwards(
+        Direction::Backwards => binary_search_start_from_backwards(
             stats,
             bucket,
             object_prefix,
@@ -571,19 +639,19 @@ fn binary_search_start_from(
 }
 
 fn binary_search_start_from_forwards(
-    stats: &mut ListStats,
+    stats: &mut ReadStats,
     bucket: &Bucket,
     object_prefix: &str,
     keyspace: &str,
     key: &str,
     data_prefix: &str,
-    filter: &DefaultedItemFilter,
+    filter: &RecordFilter,
     key_path_parser: &KeyPathParser,
     start_min: u64,
     start_max: u64,
 ) -> Result<Option<Position>, StoreError> {
     // first check if result is in the first page of results
-    // since it will return 1000 elements, this prevents many list_page operations in many cases
+    // since it will return 1000 records, this prevents many list_page operations in many cases
     let start_from = KeyPath::after_offset_prefix(object_prefix, keyspace, key, start_min);
     let (page_list, _) = list_page(bucket, data_prefix, Some(start_from), None, None)?;
     stats.list_operation_count += 1;
@@ -592,7 +660,7 @@ fn binary_search_start_from_forwards(
     } else {
         let last_object_in_cur_page = key_path_parser.parse_or_error(&page_list.last().unwrap())?;
         if last_object_in_cur_page.matches(filter) {
-            // first page contains the item, return it
+            // first page contains the record, return it
             return Ok(find_start_from_in_page(
                 &page_list,
                 &filter,
@@ -601,7 +669,7 @@ fn binary_search_start_from_forwards(
         }
     }
 
-    // perform a normal binary search, with some optimizations since a single request always returns 1000 elements
+    // perform a normal binary search, with some optimizations since a single request always returns 1000 records
     let mut min = start_min;
     let mut max = start_max;
     loop {
@@ -643,19 +711,19 @@ fn binary_search_start_from_forwards(
 }
 
 fn binary_search_start_from_backwards(
-    stats: &mut ListStats,
+    stats: &mut ReadStats,
     bucket: &Bucket,
     object_prefix: &str,
     keyspace: &str,
     key: &str,
     data_prefix: &str,
-    filter: &DefaultedItemFilter,
+    filter: &RecordFilter,
     key_path_parser: &KeyPathParser,
     start_min: u64,
     start_max: u64,
 ) -> Result<Option<Position>, StoreError> {
     // first check if result is in the first page of results
-    // since it will return 1000 elements, this prevents many list_page operations in many cases
+    // since it will return 1000 records, this prevents many list_page operations in many cases
     let start_from = KeyPath::after_offset_prefix(object_prefix, keyspace, key, start_min);
     let (page_list, _) = list_page(bucket, data_prefix, Some(start_from), None, None)?;
     stats.list_operation_count += 1;
@@ -664,7 +732,7 @@ fn binary_search_start_from_backwards(
     } else {
         let last_object_in_cur_page = key_path_parser.parse_or_error(&page_list.last().unwrap())?;
         if !last_object_in_cur_page.matches(filter) {
-            // first page contains the item, return it
+            // first page contains the record, return it
             return Ok(find_start_from_in_page(
                 &page_list,
                 &filter,
@@ -673,7 +741,7 @@ fn binary_search_start_from_backwards(
         }
     }
 
-    // perform a normal binary search, with some optimizations since a single request always returns 1000 elements
+    // perform a normal binary search, with some optimizations since a single request always returns 1000 records
     let mut min = start_min;
     let mut max = start_max;
     loop {
@@ -719,11 +787,11 @@ fn binary_search_start_from_backwards(
 
 fn find_start_from_in_page(
     page_list: &Vec<String>,
-    filter: &DefaultedItemFilter,
+    filter: &RecordFilter,
     key_path_parser: &KeyPathParser,
 ) -> Option<Position> {
-    match &filter.order {
-        IterationOrder::Forwards => {
+    match &filter.direction {
+        Direction::Forwards => {
             for path in page_list.iter() {
                 match key_path_parser.parse(path) {
                     Some(kp) => {
@@ -735,7 +803,7 @@ fn find_start_from_in_page(
                 }
             }
         }
-        IterationOrder::Backwards => {
+        Direction::Backwards => {
             for path in page_list.iter().rev() {
                 match key_path_parser.parse(path) {
                     Some(kp) => {
@@ -750,101 +818,3 @@ fn find_start_from_in_page(
     }
     return None;
 }
-
-// fn exponential_search_start_from(
-//     stats: &mut ListStats,
-//     bucket: &Bucket,
-//     object_prefix: &str,
-//     keyspace: &str,
-//     key: &str,
-//     data_prefix: &str,
-//     order: &IterationOrder,
-//     filter: &DefaultedItemFilter,
-//     first_offset_in_key: u64,
-//     key_path_parser: &KeyPathParser,
-//     start_min: u64,
-// ) -> Result<Option<Position>, StoreError> {
-//     // First, searching exponentially and determining which powers-of-two the result is between.
-//     // In most cases, this will require fewer S3::list operations than a full binary search through u64 offsets.
-//     let (min, max) = find_range_exponentially(
-//         stats,
-//         bucket,
-//         object_prefix,
-//         keyspace,
-//         key,
-//         data_prefix,
-//         order,
-//         filter,
-//         first_offset_in_key,
-//         key_path_parser,
-//         start_min,
-//     )?;
-//     // Perform a binary search between the powers-of-two from step 2, considering 1000 elements at a time
-//     return binary_search_start_from(
-//         stats,
-//         bucket,
-//         object_prefix,
-//         keyspace,
-//         key,
-//         data_prefix,
-//         filter,
-//         key_path_parser,
-//         min,
-//         max,
-//     );
-// }
-
-// fn find_range_exponentially(
-//     stats: &mut ListStats,
-//     bucket: &Bucket,
-//     object_prefix: &str,
-//     keyspace: &str,
-//     key: &str,
-//     data_prefix: &str,
-//     order: &IterationOrder,
-//     filter: &DefaultedItemFilter,
-//     first_offset_in_key: u64,
-//     key_path_parser: &KeyPathParser,
-//     start_min: u64,
-// ) -> Result<(u64, u64), StoreError> {
-//     let mut min = start_min;
-//     let mut next_pow2: u64 = 512;
-//     let mut next_check = start_min;
-//     loop {
-//         let start_from = KeyPath::after_offset_prefix(object_prefix, keyspace, key, next_check);
-//         let (page_list, _) = list_page(bucket, data_prefix, Some(start_from), None, None)?;
-//         stats.list_operation_count += 1;
-//         if page_list.is_empty() {
-//             // no more data, set max to this check and break
-//             return Ok((min, next_check));
-//         }
-//         let last_object_in_cur_page = key_path_parser.parse_or_error(&page_list.last().unwrap())?;
-//         let last_object_matches = last_object_in_cur_page.matches(&filter);
-//         let in_page = match order {
-//             IterationOrder::Forwards => last_object_matches,
-//             IterationOrder::Backwards => !last_object_matches,
-//         };
-//         if in_page {
-//             // result is on or before the last element in this page, set max and break
-//             return Ok((min, last_object_in_cur_page.last_offset));
-//         } else {
-//             // result is after, set new min, continue paging
-//             min = last_object_in_cur_page.last_offset;
-//             next_check = last_object_in_cur_page.last_offset;
-//             // find next power-of-two that is after the current page's last offset
-//             while first_offset_in_key + next_pow2 < min {
-//                 if u64::MAX - next_pow2 < last_object_in_cur_page.last_offset {
-//                     // do not surpass u64::MAX
-//                     next_check = u64::MAX;
-//                     break;
-//                 }
-//                 next_pow2 *= 2;
-//                 next_check = first_offset_in_key + next_pow2;
-//             }
-//             if next_check == u64::MAX {
-//                 // we've reached end of address space, max is u64::MAX, break
-//                 return Ok((min, u64::MAX));
-//             }
-//         }
-//     }
-// }
